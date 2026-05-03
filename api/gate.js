@@ -48,12 +48,12 @@ async function verifyHS256(token, secret) {
 
 export default async function handler(req) {
   const url = new URL(req.url);
-  const token = readCookie(req, 'iv_session');
+  const token = readCookie(req, 'session');
   let authed = false;
   if (token) {
     try {
       const payload = await verifyHS256(token, process.env.JWT_SECRET);
-      if (payload && payload.purpose === 'session') authed = true;
+      if (payload && payload.kind === 'session') authed = true;
     } catch { authed = false; }
   }
   if (!authed) return Response.redirect(PORTAL_BASE + '/', 302);
