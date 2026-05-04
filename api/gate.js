@@ -1,7 +1,10 @@
-// api/gate.js — DEBUG VERSION. Returns JSON diagnostics instead of 302.
-// REMOVE BEFORE PRODUCTION USE — accessible without auth.
+// api/gate.js — sales portfolio gate.
+// Verifies iv_session JWT cookie. Sales scope is enforced later (phase 3);
+// for now this re-uses the existing gateway allowlist.
 
 export const config = { runtime: 'edge' };
+
+const PORTAL_BASE = 'https://portal.infovisionsocial.com';
 
 function readCookie(req, name) {
   const header = req.headers.get('cookie') || '';
@@ -21,93 +24,49 @@ function b64uToBytes(str) {
 }
 function b64uToString(s) { return new TextDecoder().decode(b64uToBytes(s)); }
 
-export default async function handler(req) {
-  const out = {};
-  out.now_unix = Math.floor(Date.now() / 1000);
-  out.has_jwt_secret_env = !!process.env.JWT_SECRET;
-  out.jwt_secret_length = (process.env.JWT_SECRET || '').length;
-  out.jwt_secret_first8 = (process.env.JWT_SECRET || '').slice(0, 8);
-  out.jwt_secret_last8  = (process.env.JWT_SECRET || '').slice(-8);
-
-  const cookieHeader = req.headers.get('cookie') || '';
-  out.cookie_header_length = cookieHeader.length;
-  out.cookie_names = cookieHeader.split(';').map(c => c.trim().split('=')[0]).filter(Boolean);
-
-  const token = readCookie(req, 'session');
-  out.has_session_cookie = !!token;
-  if (!token) {
-    return new Response(JSON.stringify(out, null, 2), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    });
-  }
-
-  out.session_token_length = token.length;
-  out.session_first16 = token.slice(0, 16);
-  out.session_dot_count = (token.match(/\./g) || []).length;
-
+async function verifyHS256(token, secret) {
   const parts = token.split('.');
-  if (parts.length !== 3) {
-    out.error = 'token_not_3_parts';
-    return new Response(JSON.stringify(out, null, 2), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    });
-  }
-  const [h, p, sig] = parts;
-
+  if (parts.length !== 3) return null;
+  const [h, p, s] = parts;
   let header;
-  try { header = JSON.parse(b64uToString(h)); }
-  catch (e) {
-    out.error = 'header_parse_failed';
-    out.error_msg = String(e);
-    return new Response(JSON.stringify(out, null, 2), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    });
-  }
-  out.jwt_header = header;
-
-  let payload;
-  try { payload = JSON.parse(b64uToString(p)); }
-  catch (e) {
-    out.error = 'payload_parse_failed';
-    return new Response(JSON.stringify(out, null, 2), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    });
-  }
-  out.jwt_payload_keys = Object.keys(payload);
-  out.jwt_payload_kind = payload.kind;
-  out.jwt_payload_exp = payload.exp;
-  out.jwt_payload_email = payload.email ? payload.email.replace(/(.{3}).+(@.+)/, '$1***$2') : null;
-  out.exp_in_future = payload.exp ? (payload.exp > out.now_unix) : null;
-
-  // Try sig verification
-  try {
-    const key = await crypto.subtle.importKey(
-      'raw',
-      new TextEncoder().encode(process.env.JWT_SECRET),
-      { name: 'HMAC', hash: 'SHA-256' },
-      false, ['verify']
-    );
-    const signed = new TextEncoder().encode(`${h}.${p}`);
-    const sigBytes = b64uToBytes(sig);
-    const verified = await crypto.subtle.verify('HMAC', key, sigBytes, signed);
-    out.signature_verified = verified;
-  } catch (e) {
-    out.signature_verified = false;
-    out.signature_error = String(e);
-  }
-
-  out.would_authed = (
-    out.signature_verified &&
-    payload.kind === 'session' &&
-    (!payload.exp || payload.exp > out.now_unix)
+  try { header = JSON.parse(b64uToString(h)); } catch { return null; }
+  if (header.alg !== 'HS256') return null;
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false, ['verify']
   );
+  const signed = new TextEncoder().encode(`${h}.${p}`);
+  const sig = b64uToBytes(s);
+  if (!await crypto.subtle.verify('HMAC', key, sig, signed)) return null;
+  let payload;
+  try { payload = JSON.parse(b64uToString(p)); } catch { return null; }
+  if (payload.exp && Math.floor(Date.now() / 1000) >= payload.exp) return null;
+  return payload;
+}
 
-  return new Response(JSON.stringify(out, null, 2), {
+export default async function handler(req) {
+  const url = new URL(req.url);
+  const token = readCookie(req, 'session');
+  let authed = false;
+  if (token) {
+    try {
+      const payload = await verifyHS256(token, process.env.JWT_SECRET);
+      if (payload && payload.kind === 'session') authed = true;
+    } catch { authed = false; }
+  }
+  if (!authed) return Response.redirect(PORTAL_BASE + '/', 302);
+
+  const idx = new URL('/_index.html', url.origin);
+  const res = await fetch(idx.toString());
+  if (!res.ok) return new Response('home not found', { status: 404 });
+  const html = await res.text();
+  return new Response(html, {
     status: 200,
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'private, no-store',
+    },
   });
 }
