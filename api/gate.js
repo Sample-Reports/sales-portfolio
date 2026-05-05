@@ -53,7 +53,13 @@ export default async function handler(req) {
   if (token) {
     try {
       const payload = await verifyHS256(token, process.env.JWT_SECRET);
-      if (payload && payload.kind === 'session') authed = true;
+      if (
+        payload &&
+        payload.kind === 'session' &&
+        (payload.scope === 'admin' || payload.scope === 'sales')
+      ) {
+        authed = true;
+      }
     } catch { authed = false; }
   }
   if (!authed) return Response.redirect(PORTAL_BASE + '/', 302);
