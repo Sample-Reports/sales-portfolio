@@ -62,7 +62,10 @@ export default async function handler(req) {
       }
     } catch { authed = false; }
   }
-  if (!authed) return Response.redirect(PORTAL_BASE + '/', 302);
+  if (!authed) {
+    const next = encodeURIComponent(req.url);
+    return Response.redirect(PORTAL_BASE + '/login?next=' + next, 302);
+  }
 
   const idx = new URL('/_index.html', url.origin);
   const res = await fetch(idx.toString());
