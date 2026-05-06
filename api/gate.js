@@ -63,7 +63,11 @@ export default async function handler(req) {
     } catch { authed = false; }
   }
   if (!authed) {
-    const next = encodeURIComponent(req.url);
+    // Build public-domain URL for ?next= (req.url gives the internal *.vercel.app URL on Vercel Edge)
+    const reqUrl = new URL(req.url);
+    const publicHost = req.headers.get('x-forwarded-host') || req.headers.get('host') || reqUrl.host;
+    const publicUrl = 'https://' + publicHost + reqUrl.pathname + reqUrl.search;
+    const next = encodeURIComponent(publicUrl);
     return Response.redirect(PORTAL_BASE + '/login?next=' + next, 302);
   }
 
